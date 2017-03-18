@@ -308,7 +308,7 @@ public class XmppConnection implements Runnable {
 							socket = new Socket();
 							socket.connect(addr, Config.SOCKET_TIMEOUT * 1000);
 						} else {
-							final TlsFactoryVerifier tlsFactoryVerifier = getTlsFactoryVerifier();
+							final TlsFactoryVerifier tlsFactoryVerifier = getTlsFactoryVerifier(true);
 							socket = tlsFactoryVerifier.factory.createSocket();
 
 							if (socket == null) {
@@ -404,7 +404,7 @@ public class XmppConnection implements Runnable {
 		}
 	}
 
-	private TlsFactoryVerifier getTlsFactoryVerifier() throws NoSuchAlgorithmException, KeyManagementException, IOException {
+	private TlsFactoryVerifier getTlsFactoryVerifier(boolean allowInteractive) throws NoSuchAlgorithmException, KeyManagementException, IOException {
 		final SSLContext sc = SSLSocketHelper.getSSLContext();
 		MemorizingTrustManager trustManager = this.mXmppConnectionService.getMemorizingTrustManager();
 		KeyManager[] keyManager;
@@ -413,10 +413,10 @@ public class XmppConnection implements Runnable {
 		} else {
 			keyManager = null;
 		}
-		sc.init(keyManager, new X509TrustManager[]{mInteractive ? trustManager : trustManager.getNonInteractive()}, mXmppConnectionService.getRNG());
+		sc.init(keyManager, new X509TrustManager[]{(mInteractive && allowInteractive) ? trustManager : trustManager.getNonInteractive()}, mXmppConnectionService.getRNG());
 		final SSLSocketFactory factory = sc.getSocketFactory();
 		final HostnameVerifier verifier;
-		if (mInteractive) {
+		if (mInteractive && allowInteractive) {
 			verifier = trustManager.wrapHostnameVerifier(new XmppDomainVerifier());
 		} else {
 			verifier = trustManager.wrapHostnameVerifierNonInteractive(new XmppDomainVerifier());
@@ -685,7 +685,7 @@ public class XmppConnection implements Runnable {
 	private void switchOverToTls(final Tag currentTag) throws XmlPullParserException, IOException {
 		tagReader.readTag();
 		try {
-			final TlsFactoryVerifier tlsFactoryVerifier = getTlsFactoryVerifier();
+			final TlsFactoryVerifier tlsFactoryVerifier = getTlsFactoryVerifier(true);
 			final InetAddress address = socket == null ? null : socket.getInetAddress();
 
 			if (address == null) {
@@ -700,10 +700,18 @@ public class XmppConnection implements Runnable {
 
 			SSLSocketHelper.setSecurity(sslSocket);
 
-			if (!tlsFactoryVerifier.verifier.verify(account.getServer().getDomainpart(), sslSocket.getSession())) {
-				Log.d(Config.LOGTAG,account.getJid().toBareJid()+": TLS certificate verification failed");
+			boolean verifiedByHostname = false;
+			if (mXmppConnectionService.showExtendedConnectionOptions() && account.getHostname() != null && !account.getHostname().isEmpty()) {
+				final TlsFactoryVerifier nonInteractiveTlsFactoryVerifier = getTlsFactoryVerifier(false);
+				if (nonInteractiveTlsFactoryVerifier.verifier.verify(account.getHostname(), sslSocket.getSession())) {
+					verifiedByHostname = true;
+				}
+			}
+			if (!verifiedByHostname && !tlsFactoryVerifier.verifier.verify(account.getServer().getDomainpart(), sslSocket.getSession())) {
+				Log.d(Config.LOGTAG, account.getJid().toBareJid() + ": TLS certificate verification failed");
 				throw new SecurityException();
 			}
+
 			tagReader.setInputStream(sslSocket.getInputStream());
 			tagWriter.setOutputStream(sslSocket.getOutputStream());
 			sendStartStream();
